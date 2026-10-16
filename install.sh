@@ -57,6 +57,11 @@ fi
 
 # --- files
 SYSTEMCTL="$(command -v systemctl)"
+# The rust edition installs an enabled daemon under the same unit name: stop it first.
+if systemctl is-enabled -q kvm-autofit.service 2>/dev/null; then
+    info "disabling the rust edition daemon"
+    run systemctl disable --now kvm-autofit.service
+fi
 info "installing $LIBEXEC"
 run install -Dm755 "$ROOT/src/kvm-autofit" "$LIBEXEC"
 run ln -sfn "$LIBEXEC" "$BIN"
