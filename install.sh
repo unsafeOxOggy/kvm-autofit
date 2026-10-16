@@ -60,7 +60,7 @@ SYSTEMCTL="$(command -v systemctl)"
 info "installing $LIBEXEC"
 run install -Dm755 "$ROOT/src/kvm-autofit" "$LIBEXEC"
 run ln -sfn "$LIBEXEC" "$BIN"
-run install -Dm644 "$ROOT/README.md" "$DOC/README.md"
+[[ -f $ROOT/README.md ]] && run install -Dm644 "$ROOT/README.md" "$DOC/README.md"
 
 info "installing udev rule $UDEV"
 if (( DRY )); then
