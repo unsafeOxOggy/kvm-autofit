@@ -39,7 +39,8 @@ Projet **générique** (toutes mes VM Linux KVM), né du problème sur la VM Kal
   passe à vide = no-op, découverte X (`:0` + cookie) OK, `doctor` OK.
 - ⬜ `sudo ./install.sh` sur la VM (action utilisateur) puis valider : greeter au boot, login i3,
   plein écran on/off, `journalctl -t kvm-autofit -b`.
-- ⬜ Pas de remote GitHub.
+- ✅ GitHub : `git@github.com:unsafeOxOggy/kvm-autofit.git` (public, branche master). Push avec la clé `~/.ssh/ssh2`
+  (réglée dans `core.sshCommand`) ; auteur = adresse noreply GitHub (ne jamais committer l'e-mail perso).
 
 ## TODO
 
