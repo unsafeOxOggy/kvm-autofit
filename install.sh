@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# kvm-autofit installer — sudo ./install.sh [--uninstall] [--dry-run] [--no-lightdm]
+# kvm-autofit installer - sudo ./install.sh [--uninstall] [--dry-run] [--no-lightdm]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -21,8 +21,8 @@ for a in "$@"; do
     esac
 done
 
-info() { printf '\033[32m•\033[0m %s\n' "$*"; }
-warn() { printf '\033[33m▲\033[0m %s\n' "$*" >&2; }
+info() { printf '\033[32m[*]\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m[!]\033[0m %s\n' "$*" >&2; }
 run()  { if (( DRY )); then printf '  [dry-run] %s\n' "$*"; else "$@"; fi; }
 
 (( DRY || EUID == 0 )) || { echo "run with sudo: sudo $0 $*" >&2; exit 1; }
@@ -42,7 +42,7 @@ fi
 
 # --- guest checks (warn only: the tool is harmless outside KVM)
 virt="$(systemd-detect-virt --vm 2>/dev/null || true)"
-[[ $virt == kvm || $virt == qemu ]] || warn "not a KVM guest (detected: ${virt:-none}) — installing anyway"
+[[ $virt == kvm || $virt == qemu ]] || warn "not a KVM guest (detected: ${virt:-none}) - installing anyway"
 
 # --- dependency: xrandr
 if ! command -v xrandr >/dev/null; then
@@ -84,7 +84,7 @@ if (( WITH_LIGHTDM )) && [[ -d /etc/lightdm ]]; then
              | grep -v "$LIGHTDM" || true)"
     if [[ -n $other ]]; then
         warn "LightDM already defines a setup script in: $other"
-        warn "skipping LightDM hooks — call '$LIBEXEC --display-setup' from that script instead"
+        warn "skipping LightDM hooks - call '$LIBEXEC --display-setup' from that script instead"
     else
         info "installing LightDM hooks $LIGHTDM"
         run install -Dm644 "$ROOT/dist/lightdm/50-kvm-autofit.conf" "$LIGHTDM"
@@ -93,7 +93,7 @@ fi
 
 reload
 info "first fit"
-run "$SYSTEMCTL" start kvm-autofit.service || warn "first fit failed — see: journalctl -t kvm-autofit -b"
+run "$SYSTEMCTL" start kvm-autofit.service || warn "first fit failed - see: journalctl -t kvm-autofit -b"
 
 cat <<EOF
 

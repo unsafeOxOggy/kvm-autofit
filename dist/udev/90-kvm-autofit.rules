@@ -1,4 +1,4 @@
-# kvm-autofit — the KVM host changed the guest's preferred mode (viewer window resized,
+# kvm-autofit - the KVM host changed the guest's preferred mode (viewer window resized,
 # fullscreen toggled, VM just connected): fit every X display. RUN+= must return fast,
 # so the work is handed to a systemd oneshot unit.
 ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card[0-9]*", RUN+="@SYSTEMCTL@ --no-block start kvm-autofit.service"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# kvm-autofit — fit every running X display to the size the KVM host asks for.
+# kvm-autofit - fit every running X display to the size the KVM host asks for.
 #
 # With virtio-gpu (and QXL), the host viewer (virt-manager / virt-viewer / remote-viewer)
 # publishes its window size as the *preferred* mode of the guest connector and the
@@ -26,7 +26,7 @@ die()  { printf 'kvm-autofit: %s\n' "$*" >&2; exit 1; }
 
 usage() {
     cat <<EOF
-kvm-autofit $VERSION — fit X displays to the KVM host window
+kvm-autofit $VERSION - fit X displays to the KVM host window
 
 usage: kvm-autofit [options]            fit \$DISPLAY (user) or every X server (root)
        kvm-autofit doctor               diagnose the guest display stack
@@ -161,7 +161,7 @@ fit_all() {
 
 doctor() {
     local ok="[ok]" ko="[!!]" na="[--]" c status virt drv n
-    echo "kvm-autofit $VERSION — guest display diagnosis"
+    echo "kvm-autofit $VERSION - guest display diagnosis"
 
     virt="$(systemd-detect-virt --vm 2>/dev/null || echo none)"
     [[ $virt == kvm || $virt == qemu ]] && echo "$ok virtualization: $virt" || echo "$ko virtualization: $virt (expected kvm)"
@@ -198,7 +198,7 @@ doctor() {
         [[ -f /etc/lightdm/lightdm.conf.d/50-kvm-autofit.conf ]] && echo "$ok LightDM hooks installed" || echo "$ko LightDM hooks missing (sudo ./install.sh)"
     fi
     echo "     logs: journalctl -t kvm-autofit -b"
-    echo "     host: virt-manager → View → Scale Display → 'Auto resize VM with window' must be ON"
+    echo "     host: virt-manager -> View -> Scale Display -> 'Auto resize VM with window' must be ON"
 }
 
 # ---------------------------------------------------------------- main
