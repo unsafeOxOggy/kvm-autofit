@@ -1,0 +1,15 @@
+[Unit]
+Description=Fit X displays to the KVM host window (kvm-autofit)
+Documentation=file:///usr/local/share/doc/kvm-autofit/README.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/kvm-autofit --all --settle
+# Needs: /proc (find Xorg and its -auth cookie), /tmp/.X11-unix (X socket), /run (lock).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run
+PrivateNetwork=no
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE

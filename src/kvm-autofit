@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+# kvm-autofit — fit every running X display to the size the KVM host asks for.
+#
+# With virtio-gpu (and QXL), the host viewer (virt-manager / virt-viewer / remote-viewer)
+# publishes its window size as the *preferred* mode of the guest connector and the
+# kernel emits a DRM "change" uevent. X never applies that mode by itself: someone
+# has to run `xrandr --auto`. spice-vdagent does it, but only inside a desktop session
+# and only once it is up, so the greeter and the first seconds of a session stay wrong.
+#
+# This script is that "someone", triggered from udev (any resize), LightDM (greeter
+# and session start) or by hand. It works as root on every X server found, or as a
+# normal user on $DISPLAY.
+set -uo pipefail
+
+VERSION="0.1.0"
+SELF="$(readlink -f "$0")"
+
+ROUNDS=1                                       # 1 = single pass; --settle raises it
+DELAY="${KVM_AUTOFIT_DELAY:-0.25}"             # seconds between settle rounds
+SETTLE_ROUNDS="${KVM_AUTOFIT_ROUNDS:-16}"      # 16 x 0.25s = up to 4s of settling
+STABLE_NEEDED=3                                # consecutive "already fitted" rounds to stop
+VERBOSE=0
+
+log()  { logger -t kvm-autofit -- "$*" 2>/dev/null || true; (( VERBOSE )) && printf '%s\n' "$*" >&2; return 0; }
+die()  { printf 'kvm-autofit: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat <<EOF
+kvm-autofit $VERSION — fit X displays to the KVM host window
+
+usage: kvm-autofit [options]            fit \$DISPLAY (user) or every X server (root)
+       kvm-autofit doctor               diagnose the guest display stack
+
+options:
+  -a, --all             fit every running X server (needs root)
+  -d, --display :N      fit only this display (uses \$XAUTHORITY if set)
+  -s, --settle          keep re-checking for a few seconds (host resize is often
+                        delivered in several steps while a window is dragged)
+      --display-setup   LightDM hook: fit now, keep settling in the background
+  -v, --verbose         also print log lines to stderr (they always go to the journal)
+  -h, --help | -V, --version
+EOF
+}
+
+# ---------------------------------------------------------------- xrandr helpers
+
+# xr <display> <xauthority|""> <xrandr args...>
+xr() {
+    local d="$1" a="$2"; shift 2
+    if [[ -n $a ]]; then
+        DISPLAY="$d" XAUTHORITY="$a" xrandr "$@"
+    else
+        DISPLAY="$d" xrandr "$@"
+    fi
+}
+
+# Print "output current preferred" for each connected output ("-" when unknown).
+# `xrandr --query` also forces X to re-probe the connectors, which is what picks
+# up the new preferred mode from the kernel.
+outputs_state() {
+    xr "$1" "$2" --query 2>/dev/null | awk '
+        function flush() { if (out != "") print out, (cur == "" ? "-" : cur), (pref == "" ? "-" : pref) }
+        /^[^ \t]/ { flush(); out = ""; cur = ""; pref = ""; if ($2 == "connected") out = $1; next }
+        out != "" {
+            for (i = 2; i <= NF; i++) {
+                if ($i ~ /\*/) cur = $1
+                if ($i ~ /\+/ && pref == "") pref = $1
+            }
+        }
+        END { flush() }'
+}
+
+# One pass. Returns 0 if everything already matched, 1 if a change was applied,
+# 2 if the display could not be queried.
+fit_once() {
+    local d="$1" a="$2" state o cur pref prev="" need=0
+    local -a args=()
+    state="$(outputs_state "$d" "$a")"
+    [[ -n $state ]] || return 2
+    while read -r o cur pref; do
+        [[ $pref == "-" ]] && continue
+        [[ $cur != "$pref" ]] && need=1
+        args+=(--output "$o" --auto)
+        [[ -n $prev ]] && args+=(--right-of "$prev")
+        prev="$o"
+    done <<<"$state"
+    (( need )) || return 0
+    if xr "$d" "$a" "${args[@]}" 2>/dev/null; then
+        log "$d: $(tr '\n' ' ' <<<"$state")-> applied preferred mode"
+    else
+        log "$d: xrandr ${args[*]} failed"
+    fi
+    return 1
+}
+
+fit_display() {
+    local d="$1" a="$2" i rc stable=0
+    for (( i = 0; i < ROUNDS; i++ )); do
+        fit_once "$d" "$a"; rc=$?
+        case $rc in
+            0) (( ++stable >= STABLE_NEEDED )) && return 0 ;;
+            1) stable=0 ;;
+            2) log "$d: cannot query (no access or server gone)"; return 1 ;;
+        esac
+        (( i + 1 < ROUNDS )) && sleep "$DELAY"
+    done
+    return 0
+}
+
+# ---------------------------------------------------------------- X server discovery (root)
+
+# Find an XAUTHORITY used by a client of display $1 (fallback when Xorg has no -auth).
+auth_from_clients() {
+    local d="$1" env_file line disp auth
+    for env_file in /proc/[0-9]*/environ; do
+        disp=""; auth=""
+        while IFS= read -r -d '' line; do
+            case $line in
+                DISPLAY=*)    disp="${line#DISPLAY=}" ;;
+                XAUTHORITY=*) auth="${line#XAUTHORITY=}" ;;
+            esac
+        done 2>/dev/null <"$env_file"
+        if [[ ${disp%.0} == "$d" && $auth == /* && -r $auth ]]; then
+            printf '%s\n' "$auth"; return 0
+        fi
+    done
+    return 1
+}
+
+# Print "<display>\t<xauthority>" for each running Xorg server.
+x_servers() {
+    local pid i d auth
+    local -a argv
+    for pid in $(pgrep -x Xorg; pgrep -x X); do
+        mapfile -d '' argv 2>/dev/null <"/proc/$pid/cmdline" || continue
+        d=""; auth=""
+        for (( i = 0; i < ${#argv[@]}; i++ )); do
+            if [[ ${argv[i]} =~ ^:[0-9]+$ ]]; then
+                d="${argv[i]}"
+            elif [[ ${argv[i]} == -auth ]]; then
+                auth="${argv[i+1]:-}"
+            fi
+        done
+        [[ -n $d ]] || continue
+        [[ $auth == /* && -r $auth ]] || auth="$(auth_from_clients "$d" || true)"
+        printf '%s\t%s\n' "$d" "$auth"
+    done
+}
+
+fit_all() {
+    local d a found=0
+    (( EUID == 0 )) || die "--all needs root (as a user, run without --all to fit \$DISPLAY)"
+    while IFS=$'\t' read -r d a; do
+        found=1
+        fit_display "$d" "$a"
+    done < <(x_servers | sort -u)
+    (( found )) || log "no X server running (Wayland sessions resize natively)"
+}
+
+# ---------------------------------------------------------------- doctor
+
+doctor() {
+    local ok="[ok]" ko="[!!]" na="[--]" c status virt drv n
+    echo "kvm-autofit $VERSION — guest display diagnosis"
+
+    virt="$(systemd-detect-virt --vm 2>/dev/null || echo none)"
+    [[ $virt == kvm || $virt == qemu ]] && echo "$ok virtualization: $virt" || echo "$ko virtualization: $virt (expected kvm)"
+
+    drv="$(lspci -k 2>/dev/null | awk '/VGA compatible|Display controller/{f=1;next} f&&/Kernel driver in use/{print $NF; exit}')"
+    case $drv in
+        virtio-pci|virtio_gpu) echo "$ok GPU: virtio-gpu" ;;
+        qxl)                   echo "$ok GPU: qxl (virtio is recommended)" ;;
+        *)                     echo "$ko GPU driver: ${drv:-unknown} (set Video model = Virtio on the host)" ;;
+    esac
+
+    for c in /sys/class/drm/card*-*; do
+        [[ -r $c/status ]] || continue
+        status="$(<"$c/status")"
+        [[ $status == connected ]] && echo "$ok connector ${c##*/card?-}: connected, host wants $(head -n1 "$c/modes" 2>/dev/null)"
+    done
+
+    if [[ -n ${DISPLAY:-} ]]; then
+        while read -r n c status; do
+            [[ $c == "$status" ]] && echo "$ok $DISPLAY $n: $c (fitted)" || echo "$ko $DISPLAY $n: current $c, host wants $status"
+        done < <(outputs_state "$DISPLAY" "${XAUTHORITY:-}")
+    else
+        echo "$na no \$DISPLAY: run doctor from a terminal inside the VM to check the live display"
+    fi
+
+    command -v xrandr >/dev/null && echo "$ok xrandr installed" || echo "$ko xrandr missing (x11-xserver-utils / xrandr / xorg-xrandr)"
+    systemctl is-active -q spice-vdagentd 2>/dev/null && echo "$ok spice-vdagentd active (clipboard)" || echo "$na spice-vdagentd not active (only needed for clipboard)"
+    n="$(pgrep -cx spice-vdagent 2>/dev/null || true)"; n="${n:-0}"
+    (( n > 1 )) && echo "$ko $n spice-vdagent session agents running (expected 1 per session)"
+
+    [[ -f /etc/udev/rules.d/90-kvm-autofit.rules ]] && echo "$ok udev rule installed" || echo "$ko udev rule missing (sudo ./install.sh)"
+    [[ -f /etc/systemd/system/kvm-autofit.service ]] && echo "$ok systemd unit installed" || echo "$ko systemd unit missing (sudo ./install.sh)"
+    if [[ -d /etc/lightdm ]]; then
+        [[ -f /etc/lightdm/lightdm.conf.d/50-kvm-autofit.conf ]] && echo "$ok LightDM hooks installed" || echo "$ko LightDM hooks missing (sudo ./install.sh)"
+    fi
+    echo "     logs: journalctl -t kvm-autofit -b"
+    echo "     host: virt-manager → View → Scale Display → 'Auto resize VM with window' must be ON"
+}
+
+# ---------------------------------------------------------------- main
+
+main() {
+    local mode="" target=""
+    while (( $# )); do
+        case $1 in
+            -a|--all)        mode=all ;;
+            -d|--display)    target="${2:-}"; shift ;;
+            -s|--settle)     ROUNDS="$SETTLE_ROUNDS" ;;
+            --display-setup) mode=display-setup ;;
+            -v|--verbose)    VERBOSE=1 ;;
+            doctor)          doctor; return ;;
+            -h|--help)       usage; return ;;
+            -V|--version)    echo "$VERSION"; return ;;
+            *)               usage >&2; return 2 ;;
+        esac
+        shift
+    done
+
+    command -v xrandr >/dev/null || die "xrandr not found"
+    [[ $DELAY =~ ^[0-9]+([.][0-9]+)?$ && $SETTLE_ROUNDS =~ ^[0-9]+$ ]] || die "bad KVM_AUTOFIT_DELAY/ROUNDS"
+
+    case $mode in
+        all)
+            # Serialize runs: udev fires a burst of events while a window is dragged.
+            exec 9>/run/kvm-autofit.lock && flock -w 10 9
+            fit_all ;;
+        display-setup)
+            # LightDM waits for this hook: fit once now, settle in the background.
+            [[ -n ${DISPLAY:-} ]] || die "--display-setup needs \$DISPLAY"
+            fit_display "$DISPLAY" "${XAUTHORITY:-}"
+            setsid -f "$SELF" --display "$DISPLAY" --settle >/dev/null 2>&1 </dev/null
+            ;;
+        *)
+            target="${target:-${DISPLAY:-}}"
+            if [[ -z $target ]]; then
+                (( EUID == 0 )) && { fit_all; return; }
+                die "no \$DISPLAY (use --display :N, or run as root with --all)"
+            fi
+            [[ $target =~ ^:[0-9]+(\.[0-9]+)?$ ]] || die "invalid display: $target"
+            fit_display "$target" "${XAUTHORITY:-}" ;;
+    esac
+}
+
+main "$@"

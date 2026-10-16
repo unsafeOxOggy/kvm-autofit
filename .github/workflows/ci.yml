@@ -1,0 +1,18 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: syntax
+        run: bash -n src/kvm-autofit install.sh
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y shellcheck
+          shellcheck -S warning src/kvm-autofit install.sh || true
+          shellcheck -S error src/kvm-autofit install.sh
+      - name: smoke
+        run: |
+          ./src/kvm-autofit --version
+          ./install.sh --dry-run
